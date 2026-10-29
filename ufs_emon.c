@@ -88,7 +88,6 @@
 #define EOM_DIRECTION_SHIFT		0x6
 #define EOM_STEP_MASK			0x3F
 
-#define STRING_BUFFER_SIZE		0x24
 struct eom_result {
 	int lane;
 	int timing;
@@ -117,33 +116,43 @@ struct EOMData {
 
 static int eom_result_count;
 
-static int parse_string_desc(__u8 *buf, char *string)
+/*
+ * Copy the printable bytes of a device supplied string descriptor into
+ * string. bLength comes from the device, so it is clamped to the bytes
+ * actually held in buf, and the output is truncated to fit string_size
+ * (including the NUL terminator, which is always written).
+ */
+static int parse_string_desc(const __u8 *buf, size_t buf_size,
+			     char *string, size_t string_size)
 {
-	int len, i, j;
+	size_t len, i, j;
 
-	if (buf == NULL || string == NULL)
+	if (buf == NULL || string == NULL || buf_size < 2 || string_size == 0)
 		return ERROR;
 
 	/* bLength */
 	len = buf[0];
+	if (len > buf_size)
+		len = buf_size;
 
-	for (i = 2, j = 0; i < len; i++) {
+	for (i = 2, j = 0; i < len && j < string_size - 1; i++) {
 		if (buf[i])
 			string[j++] = (char)buf[i];
 	}
 
-	strcat(string, "\0");
+	string[j] = '\0';
 
 	return OK;
 }
 
-static int get_device_info(int fd, char *mname, char *pname, char *pversion)
+static int get_device_info(int fd, char *mname, size_t mname_size,
+			   char *pname, size_t pname_size,
+			   char *pversion, size_t pversion_size)
 {
 	int mname_idx, pname_idx, pver_idx, rc;
 	struct ufs_bsg_request bsg_req = {0};
 	struct ufs_bsg_reply bsg_rsp = {0};
 	__u8 desc_buf[QUERY_DESC_MAX_SIZE] = {0};
-	char string_buf[QUERY_DESC_MAX_SIZE];
 
 	rc = do_read_desc(fd, &bsg_req, &bsg_rsp,
 			  QUERY_DESC_IDN_DEVICE,
@@ -166,9 +175,7 @@ static int get_device_info(int fd, char *mname, char *pname, char *pversion)
 		print_error("Failed to read Manufacturer Name String Descriptor\n");
 		goto out;
 	}
-	memset(string_buf, 0, STRING_BUFFER_SIZE);
-	parse_string_desc(desc_buf, string_buf);
-	strcpy(mname, string_buf);
+	parse_string_desc(desc_buf, sizeof(desc_buf), mname, mname_size);
 
 	rc = do_read_desc(fd, &bsg_req, &bsg_rsp,
 			  QUERY_DESC_IDN_STRING,
@@ -178,9 +185,7 @@ static int get_device_info(int fd, char *mname, char *pname, char *pversion)
 		print_error("Failed to read Product Name String Descriptor\n");
 		goto out;
 	}
-	memset(string_buf, 0, STRING_BUFFER_SIZE);
-	parse_string_desc(desc_buf, string_buf);
-	strcpy(pname, string_buf);
+	parse_string_desc(desc_buf, sizeof(desc_buf), pname, pname_size);
 
 	rc = do_read_desc(fd, &bsg_req, &bsg_rsp,
 			  QUERY_DESC_IDN_STRING,
@@ -190,9 +195,7 @@ static int get_device_info(int fd, char *mname, char *pname, char *pversion)
 		print_error("Failed to read Product Revision Level String Descriptor\n");
 		goto out;
 	}
-	memset(string_buf, 0, STRING_BUFFER_SIZE);
-	parse_string_desc(desc_buf, string_buf);
-	strcpy(pversion, string_buf);
+	parse_string_desc(desc_buf, sizeof(desc_buf), pversion, pversion_size);
 
 out:
 	return rc;
@@ -392,7 +395,8 @@ static int generate_eom_report(int fd, char *eom_file, struct EOMData *data)
 	int i, rc;
 	FILE *file;
 
-	rc = get_device_info(fd, mname, pname, pver);
+	rc = get_device_info(fd, mname, sizeof(mname), pname, sizeof(pname),
+			     pver, sizeof(pver));
 	if (rc)
 		return rc;
 
